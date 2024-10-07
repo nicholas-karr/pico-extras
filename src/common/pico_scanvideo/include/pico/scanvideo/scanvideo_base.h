@@ -186,10 +186,12 @@ typedef struct scanvideo_scanline_buffer {
     uint32_t *data2;
     uint16_t data2_used;
     uint16_t data2_max;
+    uint16_t fragment_words2;
 #if PICO_SCANVIDEO_PLANE_COUNT > 2
     uint32_t *data3;
     uint16_t data3_used;
     uint16_t data3_max;
+    uint16_t fragment_words3;
 #endif
 #endif
     void *user_data;

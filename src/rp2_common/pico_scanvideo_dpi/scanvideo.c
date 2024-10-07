@@ -84,6 +84,10 @@ GCC_Pragma("GCC optimize(\"O3\")")
 #define PICO_SCANVIDEO_SCANLINE_DMA_CB_CHANNEL2 4u
 #endif
 
+#if PICO_SCANVIDEO_PLANE3_FRAGMENT_DMA
+#define PICO_SCANVIDEO_SCANLINE_DMA_CB_CHANNEL3 5u
+#endif
+
 #if PICO_SCANVIDEO_PLANE_COUNT > 2
 #define PICO_SCANVIDEO_SCANLINE_SM3 2u
 #define PICO_SCANVIDEO_SCANLINE_DMA_CHANNEL3 2u
@@ -312,7 +316,7 @@ static uint32_t variable_fragment_missing_scanline_data_chain[] = {
 };
 #endif
 
-#if PICO_SCANVIDEO_PLANE1_FIXED_FRAGMENT_DMA || PICO_SCANVIDEO_PLANE2_FIXED_FRAGMENT_DMA
+#if PICO_SCANVIDEO_PLANE1_FIXED_FRAGMENT_DMA || PICO_SCANVIDEO_PLANE2_FIXED_FRAGMENT_DMA || PICO_SCANVIDEO_PLANE3_FIXED_FRAGMENT_DMA
 static uint32_t fixed_fragment_missing_scanline_data_chain[] = {
     0, // missing_scanline_data,
     0,
@@ -794,11 +798,18 @@ void __video_most_time_critical_func(prepare_for_active_scanline_irqs_enabled)()
                                          (uint32_t) fsb->core.data_used);
 #endif
 #if PICO_SCANVIDEO_PLANE_COUNT > 1
+
 #if PICO_SCANVIDEO_PLANE2_FRAGMENT_DMA
+#if PICO_SCANVIDEO_PLANE2_FIXED_FRAGMENT_DMA
+    dma_channel_hw_addr(PICO_SCANVIDEO_SCANLINE_DMA_CHANNEL2)->al3_transfer_count = fsb->core.fragment_words2;
+#endif
     dma_channel_hw_addr(PICO_SCANVIDEO_SCANLINE_DMA_CB_CHANNEL2)->al3_read_addr_trig = (uintptr_t)fsb->core.data2;
 #else
-    dma_channel_transfer_from_buffer_now(PICO_SCANVIDEO_SCANLINE_DMA_CHANNEL2, fsb->core.data2, (uint32_t) fsb->core.data2_used);
+    dma_channel_transfer_from_buffer_now(PICO_SCANVIDEO_SCANLINE_DMA_CHANNEL, fsb->core.data2,
+                                         (uint32_t) fsb->core.data2_used);
 #endif
+
+
 #if PICO_SCANVIDEO_PLANE_COUNT > 2
     dma_channel_transfer_from_buffer_now(PICO_SCANVIDEO_SCANLINE_DMA_CHANNEL3, fsb->core.data3, (uint32_t) fsb->core.data3_used);
 //    scanline_assert(video_pio->sm[PICO_SCANVIDEO_SCANLINE_SM3].addr == video_24mhz_composable_offset_end_of_scanline_ALIGN);
@@ -1336,7 +1347,7 @@ bool scanvideo_setup_with_timing(const scanvideo_mode_t *mode, const scanvideo_t
 #if PICO_SCANVIDEO_PLANE1_VARIABLE_FRAGMENT_DMA || PICO_SCANVIDEO_PLANE2_VARIABLE_FRAGMENT_DMA
     variable_fragment_missing_scanline_data_chain[1] = native_safe_hw_ptr(_missing_scanline_data);
 #endif
-#if PICO_SCANVIDEO_PLANE1_FIXED_FRAGMENT_DMA || PICO_SCANVIDEO_PLANE2_FIXED_FRAGMENT_DMA
+#if PICO_SCANVIDEO_PLANE1_FIXED_FRAGMENT_DMA || PICO_SCANVIDEO_PLANE2_FIXED_FRAGMENT_DMA || PICO_SCANVIDEO_PLANE3_FIXED_FRAGMENT_DMA
     fixed_fragment_missing_scanline_data_chain[0] = native_safe_hw_ptr(_missing_scanline_data);
 #endif
 
@@ -1566,9 +1577,49 @@ bool scanvideo_setup_with_timing(const scanvideo_mode_t *mode, const scanvideo_t
     dma_channel_claim(PICO_SCANVIDEO_SCANLINE_DMA_CB_CHANNEL2);
 #endif
 #if PICO_SCANVIDEO_PLANE_COUNT > 2
+
+
+#error "here1"
+
+
+
+
 #if PICO_SCANVIDEO_PLANE3_FRAGMENT_DMA
-    static_assert(false);
+    dma_channel_config chain_config3 = dma_channel_get_default_config(PICO_SCANVIDEO_SCANLINE_DMA_CB_CHANNEL3);
+    channel_config_set_write_increment(&chain_config3, true);
+    // configure write ring
+    channel_config_set_ring(&chain_config3, true,
+#if PICO_SCANVIDEO_PLANE3_VARIABLE_FRAGMENT_DMA
+            3 // wrap the write at 8 bytes (so each transfer writes the same 2 word ctrl registers)
+#else
+            2 // wrap the write at 4 bytes (so each transfer writes the same ctrl register)
 #endif
+    );
+    dma_channel_configure(PICO_SCANVIDEO_SCANLINE_DMA_CB_CHANNEL3,
+                  &chain_config3,
+#if PICO_SCANVIDEO_PLANE3_VARIABLE_FRAGMENT_DMA
+                  &dma_channel_hw_addr(PICO_SCANVIDEO_SCANLINE_DMA_CHANNEL3)->al3_transfer_count,  // ch DMA config (target "ring" buffer size 8) - this is (transfer_count, read_addr trigger)
+#else
+                  &dma_channel_hw_addr(PICO_SCANVIDEO_SCANLINE_DMA_CHANNEL3)->al3_read_addr_trig,  // ch DMA config (target "ring" buffer size 4) - this is (read_addr trigger)
+#endif
+                  NULL, // set later
+#if PICO_SCANVIDEO_PLANE3_VARIABLE_FRAGMENT_DMA
+                   2, // send 2 words to ctrl block of data chain per transfer
+#else
+                  1,
+#endif
+                  false);
+    dma_channel_claim(PICO_SCANVIDEO_SCANLINE_DMA_CB_CHANNEL3);
+#endif
+
+
+
+
+
+
+
+
+
     channel_config = dma_channel_get_default_config(PICO_SCANVIDEO_SCANLINE_DMA_CHANNEL3);
     channel_config_set_dreq(&channel_config, DREQ_PIO0_TX0 + PICO_SCANVIDEO_SCANLINE_SM3);  // Select scanline dma dreq to be PICO_SCANVIDEO_SCANLINE_SM TX FIFO not full
     dma_channel_configure(PICO_SCANVIDEO_SCANLINE_DMA_CHANNEL3,
@@ -1689,8 +1740,18 @@ bool video_24mhz_composable_adapt_for_mode(const scanvideo_pio_program_t *progra
 #endif
 #endif
 #if PICO_SCANVIDEO_PLANE_COUNT > 2
+#if !PICO_SCANVIDEO_PLANE3_FRAGMENT_DMA
     missing_scanline_buffer->data3 = missing_scanline_data_overlay;
     missing_scanline_buffer->data3_used = missing_scanline_buffer->data3_max = sizeof(missing_scanline_data_overlay) / 4;
+#else
+#if PICO_SCANVIDEO_PLANE3_VARIABLE_FRAGMENT_DMA
+    missing_scanline_buffer->data3 = variable_fragment_missing_scanline_data_chain;
+    missing_scanline_buffer->data3_used = missing_scanline_buffer->data3_max = sizeof(variable_fragment_missing_scanline_data_chain) / 4;
+#else
+    missing_scanline_buffer->data3 = fixed_fragment_missing_scanline_data_chain;
+    missing_scanline_buffer->data3_used = missing_scanline_buffer->data3_max = sizeof(fixed_fragment_missing_scanline_data_chain) / 4;
+#endif
+#endif
 #endif
 #endif
     return true;
